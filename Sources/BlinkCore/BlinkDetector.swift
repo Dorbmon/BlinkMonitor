@@ -50,7 +50,7 @@ public struct BlinkDetector {
         guard let raw = measurement,
               let eye = EyeGeometry.compensated(raw),
               eye.left.isFinite, eye.right.isFinite,
-              eye.left > 0, eye.right > 0,
+              eye.left >= 0, eye.right >= 0,
               eye.left < 1, eye.right < 1 else {
             closedAt = nil
             armed = false
@@ -69,6 +69,9 @@ public struct BlinkDetector {
         previousPose = (raw.yaw, raw.pitch)
 
         guard let reference = baseline else {
+            // A fully closed lid can have zero height. It is a valid closed
+            // sample after calibration, but cannot define the open-eye baseline.
+            guard eye.left > 0, eye.right > 0 else { return result(.calibrating) }
             if calibrationStart == nil { calibrationStart = timestamp }
             samples.append(eye)
             let elapsed = timestamp - (calibrationStart ?? timestamp)

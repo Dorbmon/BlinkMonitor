@@ -32,7 +32,7 @@ class BlinkDetector:
 
     def process(self, eyes, timestamp, pose=(0.0, 0.0)):
         eyes = compensate_pose(eyes, pose)
-        if eyes is None or not all(math.isfinite(x) and 0 < x < 1 for x in eyes):
+        if eyes is None or not all(math.isfinite(x) and 0 <= x < 1 for x in eyes):
             self.closed_at = None
             self.armed = False
             self.quick_dip = None
@@ -49,6 +49,8 @@ class BlinkDetector:
         pose_changed = self.previous_pose is not None and any(abs(pose[i] - self.previous_pose[i]) > .2 for i in (0, 1))
         self.previous_pose = pose
         if self.baseline is None:
+            if min(eyes) <= 0:
+                return Detection(state="calibrating")
             if self.calibration_start is None:
                 self.calibration_start = timestamp
             self.samples.append(eyes)

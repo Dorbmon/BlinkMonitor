@@ -66,6 +66,15 @@ class DetectorTests(unittest.TestCase):
             self.assertTrue(detector.process((.3, .3), 2.20 + 1 / 60).didBlink)
             self.assertFalse(detector.process((.3, .3), 2.25).didBlink)
 
+    def test_zero_height_is_a_closed_eye_not_face_loss(self):
+        detector = self.calibrated()
+        self.assertEqual(detector.process((0, 0), 2.20).state, 'tracking')
+        self.assertTrue(detector.process((.3, .3), 2.24).didBlink)
+        detector = BlinkDetector()
+        for i in range(91):
+            self.assertEqual(detector.process((0, 0), i / 30).state, 'calibrating')
+        self.assertIsNone(detector.baseline)
+
     def test_shallow_wink_and_slow_squint_are_not_blinks(self):
         detector = self.calibrated()
         detector.process((.22, .3), 2.20)

@@ -77,7 +77,7 @@ final class BlinkDetectorTests: XCTestCase {
     func testInvalidMeasurementsNeverTrack() {
         var detector = calibrated()
         XCTAssertEqual(detector.process(EyeMeasurement(left: .nan, right: 0.3), at: 2.20).state, .noFace)
-        XCTAssertEqual(detector.process(EyeMeasurement(left: 0, right: 0.3), at: 2.24).trackedDuration, 0)
+        XCTAssertEqual(detector.process(EyeMeasurement(left: -0.1, right: 0.3), at: 2.24).trackedDuration, 0)
     }
 
     func testEyeAspectRatioIsInvariantToRotationAndScale() throws {
@@ -95,6 +95,17 @@ final class BlinkDetectorTests: XCTestCase {
         var detector = calibrated()
         _ = detector.process(closed, at: 2.20)
         XCTAssertTrue(detector.process(open, at: 2.20 + 1.0 / 60).didBlink)
+    }
+
+    func testZeroHeightLidsAreAClosureNotFaceLoss() {
+        let zero = EyeMeasurement(left: 0, right: 0)
+        var detector = calibrated()
+        XCTAssertEqual(detector.process(zero, at: 2.20).state, .tracking)
+        XCTAssertTrue(detector.process(open, at: 2.24).didBlink)
+        var uncalibrated = BlinkDetector()
+        for index in 0...90 {
+            XCTAssertEqual(uncalibrated.process(zero, at: Double(index) / 30).state, .calibrating)
+        }
     }
 
     func testFastShallowBlinkWithoutFullyClosedSample() {
