@@ -30,8 +30,13 @@ fetch() {
 }
 fetch 'https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz' \
   "$TOOLS/python.tar.gz" '72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c'
-tar -xzf "$TOOLS/python.tar.gz" -C "$APPDIR/usr/lib/blinkmonitor"
-PYTHON="$APPDIR/usr/lib/blinkmonitor/python/bin/python3"
+# Keep Python outside AppDir until linuxdeploy finishes: its recursive ELF scan
+# would rewrite wheel RPATHs and break bundled MediaPipe/OpenCV private libraries.
+RUNTIME_STAGE="$ROOT/build/appimage/python-runtime"
+rm -rf "$RUNTIME_STAGE"
+mkdir -p "$RUNTIME_STAGE"
+tar -xzf "$TOOLS/python.tar.gz" -C "$RUNTIME_STAGE"
+PYTHON="$RUNTIME_STAGE/python/bin/python3"
 "$PYTHON" -m pip install --no-cache-dir -r backend/linux/requirements.txt
 "$PYTHON" -m pip check
 fetch 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task' \
@@ -42,6 +47,9 @@ cp README.md "$APPDIR/usr/share/blinkmonitor/README.md"
 fetch 'https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage' \
   "$TOOLS/linuxdeploy-x86_64.AppImage" 'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d'
 chmod +x "$TOOLS/linuxdeploy-x86_64.AppImage"
+fetch 'https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage' \
+  "$TOOLS/appimagetool-x86_64.AppImage" 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0'
+chmod +x "$TOOLS/appimagetool-x86_64.AppImage"
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH=x86_64
 export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/blinkmonitor/python/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -54,12 +62,13 @@ DEPLOY_ARGS=(--appdir "$APPDIR" --executable "$BUNDLE/blink_monitor"
   --custom-apprun "$ROOT/packaging/linux/AppRun")
 for library in "$BUNDLE"/lib/*.so; do DEPLOY_ARGS+=(--library "$library"); done
 "$TOOLS/linuxdeploy-x86_64.AppImage" "${DEPLOY_ARGS[@]}"
+mv "$RUNTIME_STAGE/python" "$APPDIR/usr/lib/blinkmonitor/python"
 # Validate from the relocatable AppDir before making the read-only image.
 "$APPDIR/AppRun" --check-backend
-export LDAI_OUTPUT="$ROOT/dist/BlinkMonitor-$VERSION-linux-x86_64.AppImage"
-export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
-"$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --output appimage
-chmod +x "$LDAI_OUTPUT"
-"$LDAI_OUTPUT" --appimage-extract-and-run --check-backend
-(cd dist && sha256sum "$(basename "$LDAI_OUTPUT")" > "$(basename "$LDAI_OUTPUT").sha256")
-echo "Packaged $LDAI_OUTPUT"
+APPIMAGE_PATH="$ROOT/dist/BlinkMonitor-$VERSION-linux-x86_64.AppImage"
+# Assemble without a second dependency scan of the relocatable Python runtime.
+"$TOOLS/appimagetool-x86_64.AppImage" "$APPDIR" "$APPIMAGE_PATH"
+chmod +x "$APPIMAGE_PATH"
+"$APPIMAGE_PATH" --appimage-extract-and-run --check-backend
+(cd dist && sha256sum "$(basename "$APPIMAGE_PATH")" > "$(basename "$APPIMAGE_PATH").sha256")
+echo "Packaged $APPIMAGE_PATH"

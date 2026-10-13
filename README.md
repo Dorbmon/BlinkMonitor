@@ -5,7 +5,7 @@ A private desktop blink-frequency monitor: **Flutter for the dashboard, Swift fo
 - Live blinks per minute in the macOS menu bar. Click it to open the dashboard; right-click for monitoring controls and Quit.
 - Responsive Flutter dashboard with live tracking, daily totals, weighted averages, and 1 / 7 / 30-day charts.
 - Session history, 90-day local retention, CSV export, camera selection, sensitivity, and recalibration.
-- Linux V4L2 webcam support and a system-tray menu. Linux panels vary: the rate is shown in the tray menu / tooltip and, where supported, the panel label.
+- Linux V4L2 webcam support and a system-tray menu. Linux panels vary: the rate is shown in the tray menu and, where supported, the panel label.
 - Camera frames stay in memory and are discarded. No video recording, account, telemetry, or runtime network requests.
 
 ## Requirements
@@ -81,7 +81,9 @@ The macOS app is ad-hoc signed, not Developer ID signed or notarized. The workfl
 
 macOS uses `AVCaptureVideoDataOutput` and Vision face landmarks on serial background queues. Linux uses OpenCV V4L2 capture and MediaPipe Face Landmarker in a separate process. Both feed the same Flutter controller through a small measurement-only interface.
 
-Both detectors calibrate open-eye geometry for at least two seconds and 40 valid samples. A bilateral close → reopen transition counts as a blink when closure lasts 25–800 ms, with hysteresis and a 180 ms refractory period. Winks, extended closures, face loss, large frame gaps, and multiple faces do not count as blinks. Eye geometry compensates for image aspect ratio and head roll; large yaw / pitch stops tracking. A long absence triggers recalibration.
+Both detectors calibrate open-eye geometry for at least two seconds and 40 valid samples. A bilateral close → reopen transition counts as a blink with hysteresis and a 120 ms refractory period. A single closed frame at 60 fps can count; a sharp bilateral partial closure also counts if both eyes recover within 250 ms, covering fast blinks whose closed peak falls between frames. Slow shallow squints, winks, extended closures, face loss, large frame gaps, and multiple faces are rejected. Camera capture prefers 60 fps where supported and processes each delivered frame without an extra rate limiter.
+
+Eye geometry compensates for image aspect ratio, head roll, and approximate yaw / pitch foreshortening. Moderate head turns remain trackable up to about 49° yaw / 37° pitch when both eyes are visible; abrupt pose changes cancel pending blinks, and larger angles stop tracking. These are geometric operating limits, not measured accuracy guarantees. A long absence triggers recalibration. Synthetic regression tests cover fast blinks, head angles, winks, squints, and tracking gaps; real-world accuracy still requires labeled camera observations.
 
 The live value is **blink count ÷ valid tracked seconds × 60**, over a sliding 60-second window. It becomes available after five tracked seconds. Missing-face and calibration time are excluded. A zero rate means tracked time with no blinks; a dash means insufficient or unavailable tracking. History averages use summed blinks and exposure, not an average of per-minute rates. Partial minutes remain partial rather than being treated as full minutes.
 

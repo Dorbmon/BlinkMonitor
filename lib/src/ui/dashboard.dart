@@ -974,7 +974,9 @@ class _TrackingCard extends StatelessWidget {
                     const SizedBox(height: 5),
                     Text(
                       controller.running
-                          ? 'Processed on this device'
+                          ? controller.processedFPS == null
+                                ? 'Processed on this device'
+                                : '${controller.processedFPS!.round()} fps · on-device'
                           : 'Start to begin tracking',
                       style: const TextStyle(color: muted, fontSize: 9),
                     ),

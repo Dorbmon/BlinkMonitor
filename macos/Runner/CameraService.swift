@@ -22,7 +22,6 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var frameHandler: ((Frame) -> Void)?
     private var errorHandler: ((String) -> Void)?
     private var observers: [NSObjectProtocol] = []
-    private var lastFrameTime: TimeInterval = 0
     private var visionFailures = 0
 
     static func cameras() -> [CameraChoice] {
@@ -60,18 +59,25 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 session.addOutput(output)
                 output.setSampleBufferDelegate(self, queue: visionQueue)
                 session.commitConfiguration()
-                if device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }) {
+                let ranges = device.activeFormat.videoSupportedFrameRateRanges
+                let frameRate = [60, 30].first { rate in
+                    ranges.contains { $0.minFrameRate <= Double(rate) && $0.maxFrameRate >= Double(rate) }
+                }
+                if let frameRate {
                     try device.lockForConfiguration()
-                    device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
-                    device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+                    device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(frameRate))
+                    device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(frameRate))
                     device.unlockForConfiguration()
                 }
                 visionQueue.sync {
                     detector = BlinkDetector(closedFraction: sensitivity)
                     frameHandler = onFrame; errorHandler = onError
-                    lastFrameTime = 0; visionFailures = 0
+                    visionFailures = 0
                 }
-                for name in [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.wasInterruptedNotification] {
+                // Raw notification names also compile against older Xcode SDKs,
+                // before these constants moved onto AVCaptureSession in Swift.
+                for name in [Notification.Name("AVCaptureSessionRuntimeErrorNotification"),
+                             Notification.Name("AVCaptureSessionWasInterruptedNotification")] {
                     observers.append(NotificationCenter.default.addObserver(forName: name, object: session, queue: nil) { notification in
                         let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
                         onError(error?.localizedDescription ?? "The camera was interrupted. Check other camera apps, then try again.")
@@ -101,9 +107,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let frameHandler, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let timestamp = ProcessInfo.processInfo.systemUptime
-        guard timestamp - lastFrameTime >= 1.0 / 35 else { return }
-        lastFrameTime = timestamp
+        // Capture time, not callback arrival time: inference scheduling jitter
+        // must not drop the only frame containing a fast blink.
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        guard timestamp.isFinite else { return }
         let date = Date()
         autoreleasepool {
             do {
@@ -116,10 +123,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 if faces.count > 1 {
                     hint = "More than one face detected. Keep only your face in view."
                 } else if let face = faces.first {
-                    let yaw = abs(face.yaw?.doubleValue ?? 0)
-                    let pitch = abs(face.pitch?.doubleValue ?? 0)
-                    if yaw > 0.45 || pitch > 0.4 {
-                        hint = "Look toward the camera for reliable tracking."
+                    let yaw = face.yaw?.doubleValue ?? 0
+                    let pitch = face.pitch?.doubleValue ?? 0
+                    if abs(yaw) > 0.85 || abs(pitch) > 0.65 {
+                        hint = "Turn slightly toward the camera so both eyes remain visible."
                     } else if let landmarks = face.landmarks,
                               let left = landmarks.leftEye, let right = landmarks.rightEye {
                         let width = Double(CVPixelBufferGetWidth(buffer)) * face.boundingBox.width
@@ -129,7 +136,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                                 LandmarkPoint(x: $0.x * width, y: $0.y * height)
                             })
                         }
-                        if let l = ratio(left), let r = ratio(right) { measurement = EyeMeasurement(left: l, right: r) }
+                        if let l = ratio(left), let r = ratio(right) {
+                            measurement = EyeMeasurement(left: l, right: r, yaw: yaw, pitch: pitch)
+                        }
                     }
                 }
                 if measurement == nil && hint == nil { hint = "Keep your face visible and use even lighting." }

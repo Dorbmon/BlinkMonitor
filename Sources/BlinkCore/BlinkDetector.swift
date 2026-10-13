@@ -3,10 +3,14 @@ import Foundation
 public struct EyeMeasurement: Sendable {
     public let left: Double
     public let right: Double
+    public let yaw: Double
+    public let pitch: Double
 
-    public init(left: Double, right: Double) {
+    public init(left: Double, right: Double, yaw: Double = 0, pitch: Double = 0) {
         self.left = left
         self.right = right
+        self.yaw = yaw
+        self.pitch = pitch
     }
 }
 
@@ -30,6 +34,9 @@ public struct BlinkDetector {
     private var closedAt: TimeInterval?
     private var lastBlink: TimeInterval = -.infinity
     private var armed = false
+    private var previousEye: EyeMeasurement?
+    private var previousPose: (yaw: Double, pitch: Double)?
+    private var quickDip: (time: TimeInterval, left: Double, right: Double)?
 
     public init(closedFraction: Double = 0.58) {
         self.closedFraction = min(0.8, max(0.4, closedFraction))
@@ -40,12 +47,16 @@ public struct BlinkDetector {
     }
 
     public mutating func process(_ measurement: EyeMeasurement?, at timestamp: TimeInterval) -> DetectionResult {
-        guard let eye = measurement,
+        guard let raw = measurement,
+              let eye = EyeGeometry.compensated(raw),
               eye.left.isFinite, eye.right.isFinite,
               eye.left > 0, eye.right > 0,
               eye.left < 1, eye.right < 1 else {
             closedAt = nil
             armed = false
+            quickDip = nil
+            previousEye = nil
+            previousPose = nil
             previousTimestamp = nil
             if baseline == nil { samples = []; calibrationStart = nil }
             return result(.noFace)
@@ -54,6 +65,8 @@ public struct BlinkDetector {
         // A person returning after a long absence may have moved relative to the camera.
         if let last = lastValidTimestamp, timestamp - last > 3 { reset() }
         lastValidTimestamp = timestamp
+        let poseChanged = previousPose.map { abs(raw.yaw - $0.yaw) > 0.2 || abs(raw.pitch - $0.pitch) > 0.2 } ?? false
+        previousPose = (raw.yaw, raw.pitch)
 
         guard let reference = baseline else {
             if calibrationStart == nil { calibrationStart = timestamp }
@@ -75,7 +88,9 @@ public struct BlinkDetector {
         let delta = previousTimestamp.map { timestamp - $0 } ?? 0
         previousTimestamp = timestamp
         let continuous = delta > 0 && delta <= 0.25
-        if !continuous { closedAt = nil; armed = false }
+        if !continuous || poseChanged {
+            closedAt = nil; armed = false; quickDip = nil; previousEye = nil
+        }
 
         let left = eye.left / reference.left
         let right = eye.right / reference.right
@@ -84,11 +99,38 @@ public struct BlinkDetector {
         let isClosed = left < threshold && right < threshold
         let isOpen = left > reopen && right > reopen
         var blink = false
+        let previous = previousEye
+        previousEye = EyeMeasurement(left: left, right: right)
 
-        if isOpen {
+        // A camera can sample only the shoulder of a fast blink, missing its
+        // fully closed peak. Require a sharp bilateral dip AND prompt recovery.
+        if let dip = quickDip {
+            if timestamp - dip.time > 0.25 {
+                quickDip = nil
+                armed = false
+            } else if left >= dip.left * 0.9 && right >= dip.right * 0.9 {
+                blink = timestamp - dip.time >= 0.008 && timestamp - lastBlink >= 0.12
+                if blink { lastBlink = timestamp }
+                quickDip = nil
+                armed = true
+            } else if isClosed {
+                closedAt = dip.time
+                quickDip = nil
+                armed = false
+            }
+        } else if isClosed && armed && closedAt == nil {
+            closedAt = timestamp
+            armed = false
+        } else if armed, closedAt == nil, continuous, delta <= 0.1,
+                  let previous,
+                  left <= previous.left * 0.8, right <= previous.right * 0.8,
+                  left < min(0.9, threshold + 0.2), right < min(0.9, threshold + 0.2) {
+            quickDip = (timestamp, previous.left, previous.right)
+            armed = false
+        } else if isOpen {
             if let start = closedAt {
                 let duration = timestamp - start
-                blink = duration >= 0.025 && duration <= 0.8 && timestamp - lastBlink >= 0.18
+                blink = duration >= 0.008 && duration <= 0.8 && timestamp - lastBlink >= 0.12
                 if blink { lastBlink = timestamp }
             }
             closedAt = nil
@@ -100,9 +142,6 @@ public struct BlinkDetector {
                     right: reference.right * 0.995 + eye.right * 0.005
                 )
             }
-        } else if isClosed && armed && closedAt == nil {
-            closedAt = timestamp
-            armed = false
         }
 
         return DetectionResult(state: .tracking, calibrationProgress: 1,
@@ -123,6 +162,15 @@ public struct LandmarkPoint: Sendable {
 }
 
 public enum EyeGeometry {
+    /// Approximate perspective correction for moderate head yaw and pitch.
+    /// Retain a limit where the far eye becomes occluded and geometry is unstable.
+    public static func compensated(_ eye: EyeMeasurement) -> EyeMeasurement? {
+        guard eye.yaw.isFinite, eye.pitch.isFinite,
+              abs(eye.yaw) <= 0.85, abs(eye.pitch) <= 0.65 else { return nil }
+        let factor = cos(eye.yaw) / cos(eye.pitch)
+        return EyeMeasurement(left: eye.left * factor, right: eye.right * factor)
+    }
+
     /// Measures height perpendicular to the eye's longest chord. Input is in image
     /// pixels, so face-box aspect ratio and head roll do not distort the result.
     public static func aspectRatio(_ points: [LandmarkPoint]) -> Double? {

@@ -5,7 +5,7 @@ import AVFoundation
 /// Native camera lifecycle, Vision detection, and menu bar integration. Only
 /// numeric measurements cross the platform channel; images never leave Swift.
 @MainActor
-final class BlinkBridge: NSObject, @preconcurrency FlutterStreamHandler {
+final class BlinkBridge: NSObject, FlutterStreamHandler {
     private let camera = CameraService()
     private let control: FlutterMethodChannel
     private let events: FlutterEventChannel
@@ -36,25 +36,30 @@ final class BlinkBridge: NSObject, @preconcurrency FlutterStreamHandler {
         }
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.runID = nil
                 self?.camera.stop()
                 self?.emit(["type": "action", "action": "sleep"])
             }
         })
         observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.emit(["type": "action", "action": "wake"]) }
+            Task { @MainActor [weak self] in self?.emit(["type": "action", "action": "wake"]) }
         })
     }
 
-    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        sink = events
-        return nil
+    nonisolated func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        // Flutter dispatches platform channel handlers on the macOS main thread.
+        MainActor.assumeIsolated {
+            sink = events
+            return nil
+        }
     }
 
-    func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        sink = nil; runID = nil; camera.stop()
-        return nil
+    nonisolated func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        MainActor.assumeIsolated {
+            sink = nil; runID = nil; camera.stop()
+            return nil
+        }
     }
 
     private func handle(_ call: FlutterMethodCall, reply: @escaping FlutterResult) {

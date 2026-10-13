@@ -63,7 +63,7 @@ class DesktopShell with TrayListener, WindowListener {
               'running': running,
             });
           } else if (_trayAvailable) {
-            await trayManager.setToolTip('BlinkMonitor · $title · $status');
+            // Linux AppIndicator supports labels and menus, but not tooltips.
             await trayManager.setTitle(title);
             await trayManager.setContextMenu(
               Menu(
@@ -104,11 +104,6 @@ class DesktopShell with TrayListener, WindowListener {
   @override
   void onTrayIconMouseDown() {
     unawaited(show());
-  }
-
-  @override
-  void onTrayIconRightMouseDown() {
-    unawaited(trayManager.popUpContextMenu());
   }
 
   @override

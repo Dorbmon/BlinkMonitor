@@ -90,7 +90,8 @@ class CameraWorker:
                 raise RuntimeError('Cannot open the camera. Close other camera apps or choose another video device.')
             self.capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.capture.set(self.cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self.capture.set(self.cv2.CAP_PROP_FPS, 30)
+            # Drivers negotiate the closest supported rate; prefer 60 for fast blinks.
+            self.capture.set(self.cv2.CAP_PROP_FPS, 60)
             self.capture.set(self.cv2.CAP_PROP_BUFFERSIZE, 1)
             self.detector = BlinkDetector(sensitivity)
             self.run_id = run_id
@@ -135,6 +136,7 @@ class CameraWorker:
                               data=self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2RGB))
         result = self.landmarker.detect_for_video(image, timestamp_ms)
         eyes, hint = None, 'Keep your face visible and use even lighting.'
+        yaw, pitch = 0.0, 0.0
         if len(result.face_landmarks) > 1:
             hint = 'More than one face detected. Keep only your face in view.'
         elif len(result.face_landmarks) == 1:
@@ -145,9 +147,9 @@ class CameraWorker:
                 rotation = result.facial_transformation_matrixes[0]
                 yaw = math.atan2(-rotation[2, 0], math.hypot(rotation[0, 0], rotation[1, 0]))
                 pitch = math.atan2(rotation[2, 1], rotation[2, 2])
-                frontal = abs(yaw) <= .45 and abs(pitch) <= .4
+                frontal = abs(yaw) <= .85 and abs(pitch) <= .65
             if not frontal:
-                hint = 'Look toward the camera for reliable tracking.'
+                hint = 'Turn slightly toward the camera so both eyes remain visible.'
             elif width > .12:
                 height, image_width = frame.shape[:2]
                 def ratio(indices):
@@ -156,12 +158,10 @@ class CameraWorker:
                 right = ratio([362, 385, 387, 263, 373, 380])
                 if left is not None and right is not None:
                     eyes, hint = (left, right), ''
-        detection = self.detector.process(eyes, timestamp)
+        detection = self.detector.process(eyes, timestamp, (yaw, pitch))
         emit({'type': 'frame', 'runId': self.run_id, 'timestamp': wall_timestamp,
               'hint': hint, **detection.json()})
-        elapsed = time.monotonic() - timestamp
-        if elapsed < 1 / 30:
-            time.sleep(1 / 30 - elapsed)
+        # V4L2 read already paces capture. An extra sleep can discard a blink frame.
 
 
 def validated_sensitivity(args):

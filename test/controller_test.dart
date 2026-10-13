@@ -79,6 +79,22 @@ void main() {
     expect(controller.current!.trackedSeconds, 6);
   });
   test(
+    'processing rate uses delivered frames and resets after a gap',
+    () async {
+      await controller.start();
+      for (var i = 0; i < 31; i++) {
+        now = now.add(const Duration(milliseconds: 20));
+        backend.frame(now);
+      }
+      expect(controller.processedFPS, closeTo(50, .1));
+      now = now.add(const Duration(seconds: 1));
+      backend.frame(now);
+      expect(controller.processedFPS, isNull);
+      await controller.stop();
+      expect(controller.processedFPS, isNull);
+    },
+  );
+  test(
     'permission errors leave camera stopped and show actionable state',
     () async {
       backend.startError = 'Camera permission denied';

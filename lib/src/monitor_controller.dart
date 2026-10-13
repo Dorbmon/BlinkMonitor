@@ -34,6 +34,14 @@ class MonitorController extends ChangeNotifier {
   double? liveRate;
   double openness = 0;
   double calibration = 0;
+  final List<DateTime> _frameTimes = [];
+  double? get processedFPS {
+    if (!running || _frameTimes.length < 2) return null;
+    final seconds =
+        _frameTimes.last.difference(_frameTimes.first).inMicroseconds / 1000000;
+    return seconds >= 0.5 ? (_frameTimes.length - 1) / seconds : null;
+  }
+
   int page = 0;
   VoidCallback? onQuit;
   RollingRate _rolling = RollingRate();
@@ -133,6 +141,7 @@ class MonitorController extends ChangeNotifier {
     detail = '';
     _rolling = RollingRate();
     liveRate = null;
+    _frameTimes.clear();
     openness = 0;
     calibration = 0;
     _lastFrame = _now();
@@ -281,6 +290,16 @@ class MonitorController extends ChangeNotifier {
           );
           final seconds = (event['trackedDuration'] as num).toDouble();
           final blink = event['didBlink'] == true;
+          if (_frameTimes.isNotEmpty &&
+              (at.isBefore(_frameTimes.last) ||
+                  at.difference(_frameTimes.last).inMilliseconds > 250)) {
+            _frameTimes.clear();
+          }
+          _frameTimes.add(at);
+          _frameTimes.removeWhere(
+            (time) => at.difference(time).inMilliseconds > 2000,
+          );
+          if (_frameTimes.length > 240) _frameTimes.removeAt(0);
           _lastFrame = _now();
           current?.record(at, seconds, blink);
           _rolling.record(at, seconds, blink);

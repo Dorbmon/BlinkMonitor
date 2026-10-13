@@ -90,4 +90,61 @@ final class BlinkDetectorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(EyeGeometry.aspectRatio(rotated)), 0.2, accuracy: 0.0001)
         XCTAssertNil(EyeGeometry.aspectRatio([]))
     }
+
+    func testSingleClosedFrameAt60FPSCounts() {
+        var detector = calibrated()
+        _ = detector.process(closed, at: 2.20)
+        XCTAssertTrue(detector.process(open, at: 2.20 + 1.0 / 60).didBlink)
+    }
+
+    func testFastShallowBlinkWithoutFullyClosedSample() {
+        var detector = calibrated()
+        _ = detector.process(EyeMeasurement(left: 0.22, right: 0.23), at: 2.20)
+        XCTAssertTrue(detector.process(open, at: 2.20 + 1.0 / 60).didBlink)
+        XCTAssertFalse(detector.process(open, at: 2.25).didBlink)
+    }
+
+    func testShallowWinkAndSlowSquintDoNotCount() {
+        var detector = calibrated()
+        _ = detector.process(EyeMeasurement(left: 0.22, right: 0.3), at: 2.20)
+        XCTAssertFalse(detector.process(open, at: 2.24).didBlink)
+        for (index, ratio) in [0.29, 0.27, 0.25, 0.23, 0.23, 0.25, 0.27, 0.30].enumerated() {
+            XCTAssertFalse(detector.process(EyeMeasurement(left: ratio, right: ratio), at: 2.3 + Double(index) / 30).didBlink)
+        }
+    }
+
+    func testSustainedShallowClosureAndFaceLossCancelQuickDip() {
+        var detector = calibrated()
+        let shallow = EyeMeasurement(left: 0.22, right: 0.22)
+        for index in 0...12 {
+            XCTAssertFalse(detector.process(shallow, at: 2.2 + Double(index) / 30).didBlink)
+        }
+        XCTAssertFalse(detector.process(open, at: 2.65).didBlink)
+        _ = detector.process(shallow, at: 2.68)
+        _ = detector.process(nil, at: 2.70)
+        XCTAssertFalse(detector.process(open, at: 2.72).didBlink)
+    }
+
+    func testModerateHeadTurnAndPitchTrackAndCount() {
+        for (yaw, pitch) in [(0.7, 0.0), (0.0, 0.55), (0.6, 0.45)] {
+            var detector = calibrated()
+            let factor = cos(pitch) / cos(yaw)
+            let tiltedOpen = EyeMeasurement(left: 0.3 * factor, right: 0.3 * factor, yaw: yaw, pitch: pitch)
+            for index in 0...4 {
+                let result = detector.process(tiltedOpen, at: 2.20 + Double(index) / 30)
+                XCTAssertEqual(result.state, .tracking)
+                XCTAssertFalse(result.didBlink)
+                XCTAssertEqual(result.openness, 1, accuracy: 0.001)
+            }
+            _ = detector.process(EyeMeasurement(left: 0.1 * factor, right: 0.1 * factor, yaw: yaw, pitch: pitch), at: 2.37)
+            XCTAssertTrue(detector.process(tiltedOpen, at: 2.40).didBlink)
+        }
+    }
+
+    func testSuddenHeadMovementDoesNotBecomeBlink() {
+        var detector = calibrated()
+        _ = detector.process(EyeMeasurement(left: 0.1, right: 0.1, yaw: 0.7), at: 2.20)
+        XCTAssertFalse(detector.process(open, at: 2.24).didBlink)
+        XCTAssertEqual(detector.process(EyeMeasurement(left: 0.3, right: 0.3, yaw: 1.1), at: 2.28).state, .noFace)
+    }
 }

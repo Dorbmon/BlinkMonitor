@@ -59,5 +59,46 @@ class DetectorTests(unittest.TestCase):
         self.assertAlmostEqual(aspect_ratio(rotated), .2)
         self.assertIsNone(aspect_ratio([]))
 
+    def test_single_frame_fast_blink_at_60fps(self):
+        for eyes in ((.1, .1), (.22, .23)):
+            detector = self.calibrated()
+            detector.process(eyes, 2.20)
+            self.assertTrue(detector.process((.3, .3), 2.20 + 1 / 60).didBlink)
+            self.assertFalse(detector.process((.3, .3), 2.25).didBlink)
+
+    def test_shallow_wink_and_slow_squint_are_not_blinks(self):
+        detector = self.calibrated()
+        detector.process((.22, .3), 2.20)
+        self.assertFalse(detector.process((.3, .3), 2.24).didBlink)
+        for i, ratio in enumerate((.29, .27, .25, .23, .23, .25, .27, .30)):
+            self.assertFalse(detector.process((ratio, ratio), 2.3 + i / 30).didBlink)
+
+    def test_long_shallow_closure_and_face_loss_cancel_quick_dip(self):
+        detector = self.calibrated()
+        for i in range(13):
+            self.assertFalse(detector.process((.22, .22), 2.2 + i / 30).didBlink)
+        self.assertFalse(detector.process((.3, .3), 2.65).didBlink)
+        detector.process((.22, .22), 2.68)
+        detector.process(None, 2.70)
+        self.assertFalse(detector.process((.3, .3), 2.72).didBlink)
+
+    def test_moderate_head_turn_and_pitch(self):
+        for pose in ((.7, 0), (0, .55), (.6, .45)):
+            detector = self.calibrated()
+            factor = math.cos(pose[1]) / math.cos(pose[0])
+            for i in range(5):
+                result = detector.process((.3 * factor, .3 * factor), 2.2 + i / 30, pose)
+                self.assertEqual(result.state, 'tracking')
+                self.assertFalse(result.didBlink)
+                self.assertAlmostEqual(result.openness, 1)
+            detector.process((.1 * factor, .1 * factor), 2.37, pose)
+            self.assertTrue(detector.process((.3 * factor, .3 * factor), 2.40, pose).didBlink)
+
+    def test_sudden_pose_change_cannot_create_blink(self):
+        detector = self.calibrated()
+        detector.process((.1, .1), 2.20, (.7, 0))
+        self.assertFalse(detector.process((.3, .3), 2.24).didBlink)
+        self.assertEqual(detector.process((.3, .3), 2.28, (1.1, 0)).state, 'noFace')
+
 
 if __name__ == '__main__': unittest.main()
