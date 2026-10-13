@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+APP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$APP_ROOT/usr/lib:$APP_ROOT/usr/lib/blinkmonitor/python/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export BLINKMONITOR_PYTHON="$APP_ROOT/usr/lib/blinkmonitor/python/bin/python3"
+export BLINKMONITOR_MODEL="$APP_ROOT/usr/share/blinkmonitor/face_landmarker.task"
+export PYTHONHOME="$APP_ROOT/usr/lib/blinkmonitor/python"
+export PYTHONNOUSERSITE=1
+export MPLCONFIGDIR="${XDG_CACHE_HOME:-$HOME/.cache}/blinkmonitor/matplotlib"
+# Smoke tests use the same bundled interpreter, model, and runtime library paths.
+if [[ "${1:-}" == --check-backend ]]; then
+  exec "$BLINKMONITOR_PYTHON" "$APP_ROOT/usr/share/blinkmonitor/backend/blink_backend.py" --model "$BLINKMONITOR_MODEL" --check
+fi
+exec "$APP_ROOT/usr/bin/blink_monitor" "$@"

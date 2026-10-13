@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BlinkMonitor
+Comment=Private, on-device blink frequency tracking
+Exec=blink_monitor
+Icon=blinkmonitor
+Terminal=false
+Categories=Utility;
+StartupWMClass=com.dorbmon.blink_monitor

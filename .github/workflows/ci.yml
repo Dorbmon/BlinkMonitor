@@ -1,0 +1,78 @@
+name: Build and package
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Linux build and packaging dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libayatana-appindicator3-dev libstdc++-12-dev libgl1 libegl1 libfuse2 patchelf desktop-file-utils
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Swift detector tests
+        if: runner.os == 'macOS'
+        run: swift test
+      - run: python -m unittest discover -s backend/linux/tests -v
+      - name: Package macOS universal app
+        if: runner.os == 'macOS'
+        run: ./scripts/package-macos.sh
+      - name: Package Linux AppImage with camera runtime
+        if: runner.os == 'Linux'
+        run: ./scripts/package-linux.sh
+      - name: Upload downloadable packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlinkMonitor-${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish versioned release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: desktop
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: BlinkMonitor-*
+          merge-multiple: true
+          path: dist
+      - name: Publish AppImage and macOS app ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "BlinkMonitor $RELEASE_TAG"
