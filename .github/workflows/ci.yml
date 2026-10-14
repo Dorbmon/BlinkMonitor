@@ -75,4 +75,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "BlinkMonitor $RELEASE_TAG"
+          # A release may already exist when its tag triggers this workflow,
+          # or after a previous upload failed. Preserve its notes and settings.
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "BlinkMonitor $RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
