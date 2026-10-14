@@ -47,6 +47,8 @@ class CameraWorker:
         self.last_timestamp_ms = -1
         self.last_wall_frame = 0
         self.failures = 0
+        self.roll = 0.0
+        self.face_center = None
 
     def load_runtime(self):
         try:
@@ -98,6 +100,8 @@ class CameraWorker:
             self.last_timestamp_ms = -1
             self.last_wall_frame = time.time()
             self.failures = 0
+            self.roll = 0.0
+            self.face_center = None
         except Exception:
             self.stop()
             raise
@@ -132,6 +136,10 @@ class CameraWorker:
         # Monotonic timestamps also prevent false blinks across suspend/resume gaps.
         timestamp_ms = max(self.last_timestamp_ms + 1, int(timestamp * 1000))
         self.last_timestamp_ms = timestamp_ms
+        height, image_width = frame.shape[:2]
+        pivot = self.face_center or (image_width / 2, height / 2)
+        transform = self.cv2.getRotationMatrix2D(pivot, math.degrees(self.roll), 1.0)
+        frame = self.cv2.warpAffine(frame, transform, (image_width, height))
         image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB,
                               data=self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2RGB))
         result = self.landmarker.detect_for_video(image, timestamp_ms)
@@ -139,25 +147,39 @@ class CameraWorker:
         yaw, pitch = 0.0, 0.0
         if len(result.face_landmarks) > 1:
             hint = 'More than one face detected. Keep only your face in view.'
+            self.roll, self.face_center = 0.0, None
         elif len(result.face_landmarks) == 1:
             face = result.face_landmarks[0]
             width = max(p.x for p in face) - min(p.x for p in face)
+            cx = (min(p.x for p in face) + max(p.x for p in face)) * image_width / 2
+            cy = (min(p.y for p in face) + max(p.y for p in face)) * height / 2
+            inverse = self.cv2.invertAffineTransform(transform)
+            self.face_center = (float(inverse[0] @ [cx, cy, 1]), float(inverse[1] @ [cx, cy, 1]))
+            dx = ((face[362].x + face[263].x) - (face[33].x + face[133].x)) * image_width
+            dy = ((face[362].y + face[263].y) - (face[33].y + face[133].y)) * height
+            residual = math.atan2(dy, dx)
+            if residual > math.pi / 2: residual -= math.pi
+            if residual < -math.pi / 2: residual += math.pi
+            self.roll = min(math.pi / 2, max(-math.pi / 2, self.roll + residual * .8))
             frontal = True
             if len(result.facial_transformation_matrixes):
                 rotation = result.facial_transformation_matrixes[0]
                 yaw = math.atan2(-rotation[2, 0], math.hypot(rotation[0, 0], rotation[1, 0]))
                 pitch = math.atan2(rotation[2, 1], rotation[2, 2])
                 frontal = abs(yaw) <= .85 and abs(pitch) <= .65
-            if not frontal:
+            if abs(residual) > .12:
+                hint = 'Adjusting to your head tilt. Hold your natural posture briefly.'
+            elif not frontal:
                 hint = 'Turn slightly toward the camera so both eyes remain visible.'
             elif width > .12:
-                height, image_width = frame.shape[:2]
                 def ratio(indices):
                     return aspect_ratio([(face[i].x * image_width, face[i].y * height) for i in indices])
                 left = ratio([33, 160, 158, 133, 153, 144])
                 right = ratio([362, 385, 387, 263, 373, 380])
                 if left is not None and right is not None:
                     eyes, hint = (left, right), ''
+        else:
+            self.roll, self.face_center = 0.0, None
         detection = self.detector.process(eyes, timestamp, (yaw, pitch))
         emit({'type': 'frame', 'runId': self.run_id, 'timestamp': wall_timestamp,
               'hint': hint, **detection.json()})

@@ -83,7 +83,20 @@ macOS uses `AVCaptureVideoDataOutput` and Vision face landmarks on serial backgr
 
 Both detectors calibrate open-eye geometry for at least two seconds and 40 valid samples. A bilateral close → reopen transition counts as a blink with hysteresis and a 120 ms refractory period. A single closed frame at 60 fps can count; a sharp bilateral partial closure also counts if both eyes recover within 250 ms, covering fast blinks whose closed peak falls between frames. Slow shallow squints, winks, extended closures, face loss, large frame gaps, and multiple faces are rejected. Camera capture prefers 60 fps where supported and processes each delivered frame without an extra rate limiter.
 
-Eye geometry compensates for image aspect ratio, head roll, and approximate yaw / pitch foreshortening. Moderate head turns remain trackable up to about 49° yaw / 37° pitch when both eyes are visible; abrupt pose changes cancel pending blinks, and larger angles stop tracking. These are geometric operating limits, not measured accuracy guarantees. A long absence triggers recalibration. Synthetic regression tests cover fast blinks, head angles, winks, squints, and tracking gaps; real-world accuracy still requires labeled camera observations.
+Before landmark inference, both camera pipelines rotate incoming frames around the face to stabilize head tilt. The eye line updates this correction each frame, and measurements are withheld briefly while a new angle settles. This corrects model input as well as the eye geometry. Geometry also compensates for image aspect ratio and approximate yaw / pitch foreshortening. Moderate head turns remain trackable up to about 49° yaw / 37° pitch when both eyes are visible; abrupt pose changes cancel pending blinks, and larger angles stop tracking. These are geometric operating limits, not measured accuracy guarantees. A long absence triggers recalibration. Synthetic regression tests cover fast blinks, head angles, winks, squints, and tracking gaps; real-world accuracy still requires labeled camera observations.
+
+An optional macOS Vision integration check rotates a local portrait through ±45° and checks the production landmark pipeline without opening a camera:
+
+```sh
+swiftc Sources/BlinkCore/BlinkDetector.swift macos/Runner/CameraService.swift scripts/check-vision-roll.swift -o /tmp/check-vision-roll
+/tmp/check-vision-roll /path/to/consented-portrait.jpg
+```
+
+The same fixture can check the MediaPipe camera pipeline with the backend Python environment:
+
+```sh
+python scripts/check-linux-roll.py /path/to/consented-portrait.jpg --model /path/to/face_landmarker.task
+```
 
 The live value is **blink count ÷ valid tracked seconds × 60**, over a sliding 60-second window. It becomes available after five tracked seconds. Missing-face and calibration time are excluded. A zero rate means tracked time with no blinks; a dash means insufficient or unavailable tracking. History averages use summed blinks and exposure, not an average of per-minute rates. Partial minutes remain partial rather than being treated as full minutes.
 

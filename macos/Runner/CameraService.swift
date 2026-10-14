@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Vision
+import CoreImage
 
 struct CameraChoice: Identifiable, Hashable {
     let id: String
@@ -23,6 +24,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var errorHandler: ((String) -> Void)?
     private var observers: [NSObjectProtocol] = []
     private var visionFailures = 0
+    private var landmarkTracker = UprightFaceLandmarks()
 
     static func cameras() -> [CameraChoice] {
         let types: [AVCaptureDevice.DeviceType]
@@ -73,6 +75,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     detector = BlinkDetector(closedFraction: sensitivity)
                     frameHandler = onFrame; errorHandler = onError
                     visionFailures = 0
+                    landmarkTracker = UprightFaceLandmarks()
                 }
                 // Raw notification names also compile against older Xcode SDKs,
                 // before these constants moved onto AVCaptureSession in Swift.
@@ -114,10 +117,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let date = Date()
         autoreleasepool {
             do {
-                let request = VNDetectFaceLandmarksRequest()
-                try VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up).perform([request])
+                let observations = try landmarkTracker.detect(CIImage(cvPixelBuffer: buffer))
                 visionFailures = 0
-                let faces = (request.results ?? []).filter { $0.confidence >= 0.7 && $0.boundingBox.width > 0.12 }
+                let faces = observations.filter { $0.confidence >= 0.7 && $0.boundingBox.width > 0.12 }
                 var measurement: EyeMeasurement?
                 var hint: String?
                 if faces.count > 1 {
@@ -125,7 +127,9 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 } else if let face = faces.first {
                     let yaw = face.yaw?.doubleValue ?? 0
                     let pitch = face.pitch?.doubleValue ?? 0
-                    if abs(yaw) > 0.85 || abs(pitch) > 0.65 {
+                    if landmarkTracker.isSettling {
+                        hint = "Adjusting to your head tilt. Hold your natural posture briefly."
+                    } else if abs(yaw) > 0.85 || abs(pitch) > 0.65 {
                         hint = "Turn slightly toward the camera so both eyes remain visible."
                     } else if let landmarks = face.landmarks,
                               let left = landmarks.leftEye, let right = landmarks.rightEye {
@@ -159,5 +163,50 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             case .configuration: return "This camera does not support the required video capture configuration."
             }
         }
+    }
+}
+
+/// Stabilize the pixels before landmark inference. Merely rotating the measured
+/// eye contour cannot correct landmark errors caused by a tilted input face.
+final class UprightFaceLandmarks {
+    private var correction = 0.0
+    private var center: CGPoint?
+    private(set) var isSettling = false
+
+    func detect(_ image: CIImage) throws -> [VNFaceObservation] {
+        let extent = image.extent
+        let pivot = center ?? CGPoint(x: extent.midX, y: extent.midY)
+        let transform = CGAffineTransform(translationX: pivot.x, y: pivot.y)
+            .rotated(by: -correction).translatedBy(x: -pivot.x, y: -pivot.y)
+        let aligned = image.transformed(by: transform).cropped(to: extent)
+        let request = VNDetectFaceLandmarksRequest()
+        try VNImageRequestHandler(ciImage: aligned, orientation: .up).perform([request])
+        let faces = request.results ?? []
+        guard faces.count == 1, let face = faces.first else {
+            correction = 0; center = nil; isSettling = false
+            return faces
+        }
+        center = CGPoint(x: face.boundingBox.midX * extent.width + extent.minX,
+                         y: face.boundingBox.midY * extent.height + extent.minY).applying(transform.inverted())
+        var residual = face.roll?.doubleValue ?? 0
+        // The eye line gives a continuous estimate; Vision's reported roll can
+        // be quantized. Averaging each eye also avoids changes during a blink.
+        if let left = face.landmarks?.leftEye, let right = face.landmarks?.rightEye,
+           left.pointCount > 0, right.pointCount > 0 {
+            func mean(_ eye: VNFaceLandmarkRegion2D) -> CGPoint {
+                let sum = eye.normalizedPoints.reduce(CGPoint.zero) {
+                    CGPoint(x: $0.x + CGFloat($1.x), y: $0.y + CGFloat($1.y))
+                }
+                return CGPoint(x: sum.x / CGFloat(eye.pointCount), y: sum.y / CGFloat(eye.pointCount))
+            }
+            let l = mean(left), r = mean(right)
+            residual = atan2((r.y - l.y) * face.boundingBox.height * extent.height,
+                             (r.x - l.x) * face.boundingBox.width * extent.width)
+            if residual > .pi / 2 { residual -= .pi }
+            if residual < -.pi / 2 { residual += .pi }
+        }
+        isSettling = abs(residual) > 0.12
+        correction = min(.pi / 2, max(-.pi / 2, correction + residual * 0.8))
+        return faces
     }
 }
