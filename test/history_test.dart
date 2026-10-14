@@ -57,6 +57,46 @@ void main() {
     expect(session.blinks, 0);
     expect(session.trackedSeconds, 0);
   });
+  test('overlapping callback intervals are counted only once', () {
+    final session = MonitoringSession('jitter', start);
+    final rolling = RollingRate();
+    rolling.record(start, 0, false);
+    for (var i = 1; i <= 1800; i++) {
+      final at = start.add(Duration(microseconds: (i * 1000000 / 30).round()));
+      session.record(at, .04, i % 60 == 0);
+      rolling.record(at, .04, i % 60 == 0);
+    }
+    expect(session.trackedSeconds, closeTo(60, .001));
+    expect(session.minutes.every((row) => row.trackedSeconds <= 60), true);
+    expect(
+      rolling.at(start.add(const Duration(minutes: 1))),
+      closeTo(30, .001),
+    );
+    final copy = HistoryDocument.decode(
+      HistoryDocument(sessions: [session]).encode(),
+    );
+    expect(copy.sessions.single.blinks, 30);
+  });
+  test(
+    'legacy single-frame minute overflow is recovered without losing blinks',
+    () {
+      final row = MinuteRecord.fromJson({
+        'start': start.toIso8601String(),
+        'trackedSeconds': 60.052639,
+        'blinks': 11,
+      });
+      expect(row.trackedSeconds, 60);
+      expect(row.blinks, 11);
+      expect(
+        () => MinuteRecord.fromJson({
+          'start': start.toIso8601String(),
+          'trackedSeconds': 90,
+          'blinks': 11,
+        }),
+        throwsFormatException,
+      );
+    },
+  );
   test('archive round trip retains precise times and preferences', () {
     final session = MonitoringSession('session', start);
     for (var i = 1; i <= 40; i++) {

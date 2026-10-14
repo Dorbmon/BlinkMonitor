@@ -18,13 +18,15 @@ class MinuteRecord {
   factory MinuteRecord.fromJson(Map<String, dynamic> json) {
     final seconds = (json['trackedSeconds'] as num).toDouble();
     final blinks = json['blinks'] as int;
-    if (!seconds.isFinite || seconds < 0 || seconds > 60.01 || blinks < 0) {
+    // Older builds used capture durations with callback timestamps, allowing up
+    // to one frame of overlap at a minute boundary. Recover those archives.
+    if (!seconds.isFinite || seconds < 0 || seconds > 60.250001 || blinks < 0) {
       throw const FormatException('Invalid history counters');
     }
     return MinuteRecord(
       DateTime.parse(json['start'] as String).toLocal(),
       blinks: blinks,
-      trackedSeconds: seconds,
+      trackedSeconds: min(60, seconds),
     );
   }
 }
@@ -48,16 +50,23 @@ class MonitoringSession {
 
   void record(DateTime at, double seconds, bool blink) {
     if (!seconds.isFinite || seconds < 0 || seconds > .25) return;
-    if (at.isAfter(endedAt)) endedAt = at;
+    if (!at.isAfter(endedAt)) return;
     var cursor = at.subtract(
       Duration(microseconds: (seconds * 1000000).round()),
     );
+    // Capture intervals can overlap in wall time when callbacks are delayed.
+    // Never count an already observed interval twice.
+    if (cursor.isBefore(endedAt)) cursor = endedAt;
+    endedAt = at;
     while (cursor.isBefore(at)) {
       final start = minuteStart(cursor);
       final boundary = start.add(const Duration(minutes: 1));
       final end = boundary.isBefore(at) ? boundary : at;
-      _minute(start).trackedSeconds +=
-          end.difference(cursor).inMicroseconds / 1000000;
+      final minute = _minute(start);
+      minute.trackedSeconds = min(
+        60,
+        minute.trackedSeconds + end.difference(cursor).inMicroseconds / 1000000,
+      );
       cursor = end;
     }
     if (blink) _minute(minuteStart(at)).blinks++;
@@ -107,11 +116,20 @@ DateTime minuteStart(DateTime date) => DateTime.fromMillisecondsSinceEpoch(
 class RollingRate {
   final List<({DateTime end, double seconds})> _exposures = [];
   final List<DateTime> _blinks = [];
+  DateTime? _lastEnd;
 
   void record(DateTime at, double seconds, bool blink) {
+    if (_lastEnd != null && !at.isAfter(_lastEnd!)) return;
     if (seconds > 0 && seconds <= .25 && seconds.isFinite) {
+      if (_lastEnd != null) {
+        seconds = min(
+          seconds,
+          at.difference(_lastEnd!).inMicroseconds / 1000000,
+        );
+      }
       _exposures.add((end: at, seconds: seconds));
     }
+    _lastEnd = at;
     if (blink) _blinks.add(at);
     _prune(at);
   }
